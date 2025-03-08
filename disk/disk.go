@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const Signature uint32 = 0x5646534C // VFSL
@@ -234,4 +236,472 @@ func (d *Disk) updateFromHeader() {
 		d.blockLocks = newBlockLocks
 	}
 
+}
+
+// readAllocationSet reads the entire allocation set from the file
+func (d *Disk) readAllocationSet() ([]byte, error) {
+	// Acquire read lock for allocation set
+	d.allocSetLock.RLock()
+	defer d.allocSetLock.RUnlock()
+
+	return d.readAllocationSetNoLock()
+}
+
+// readAllocationSetNoLock reads the allocation set without acquiring a lock
+func (d *Disk) readAllocationSetNoLock() ([]byte, error) {
+	// Read the entire allocation set
+	buffer := make([]byte, d.header.allocSetSize)
+	_, err := d.file.ReadAt(buffer, int64(d.header.allocSetOffset))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read allocation set: %w", err)
+	}
+
+	return buffer, nil
+}
+
+// isBlockAllocated checks if a specific block is allocated
+func (d *Disk) isBlockAllocated(allocSet []byte, blockNum uint64) bool {
+	byteIndex := blockNum / 8
+	bitIndex := blockNum % 8
+
+	if byteIndex >= d.header.allocSetSize {
+		return false
+	}
+
+	return (allocSet[byteIndex] & (1 << bitIndex)) != 0
+}
+
+// setBlockAllocation sets or clears a specific block's allocation bit
+func (d *Disk) setBlockAllocation(allocSet []byte, blockNum uint64, allocated bool) {
+	byteIndex := blockNum / 8
+	bitIndex := blockNum % 8
+
+	if byteIndex >= d.header.allocSetSize {
+		return
+	}
+
+	if allocated {
+		// Set the bit
+		allocSet[byteIndex] |= 1 << bitIndex
+	} else {
+		// Clear the bit
+		allocSet[byteIndex] &= ^(1 << bitIndex)
+	}
+}
+
+// updateAllocationSet atomically updates a specific block's allocation status
+func (d *Disk) updateAllocationSet(blockNum uint64, status uint8) error {
+	// Acquire write lock for allocation set
+	d.allocSetLock.Lock()
+	defer d.allocSetLock.Unlock()
+
+	// Read current allocation set
+	allocSet, err := d.readAllocationSetNoLock()
+	if err != nil {
+		return err
+	}
+
+	// Ensure block number is valid
+	byteIndex := blockNum / 8
+	if byteIndex >= d.header.allocSetSize {
+		return fmt.Errorf("block number %d out of range for allocation set", blockNum)
+	}
+
+	// Update the allocation status
+	if status == 1 {
+		d.setBlockAllocation(allocSet, blockNum, true)
+	} else {
+		d.setBlockAllocation(allocSet, blockNum, false)
+	}
+
+	// Write updated allocation set back to file
+	_, err = d.file.WriteAt(allocSet, int64(d.header.allocSetOffset))
+	return err
+}
+
+// countAllocatedBlocks counts the number of allocated blocks in the allocation set
+func (d *Disk) countAllocatedBlocks(allocSet []byte) uint64 {
+	var count uint64
+
+	for i := uint64(0); i < d.header.totalBlocks; i++ {
+		if d.isBlockAllocated(allocSet, i) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// findAndReserveBlock finds an available block and atomically reserves it
+func (d *Disk) findAndReserveBlock() (uint64, error) {
+	// Acquire write lock for allocation set to ensure atomic operation
+	d.allocSetLock.Lock()
+	defer d.allocSetLock.Unlock()
+
+	// Read the current allocation set directly from file
+	allocSet, err := d.readAllocationSetNoLock()
+	if err != nil {
+		return 0, err
+	}
+
+	// Find the first block with value 0 (unallocated)
+	for blockNum := uint64(0); blockNum < d.header.totalBlocks; blockNum++ {
+		if !d.isBlockAllocated(allocSet, blockNum) {
+			// Found an available block, mark it as allocated
+			d.setBlockAllocation(allocSet, blockNum, true)
+
+			// Write the updated allocation set back to file immediately
+			_, err = d.file.WriteAt(allocSet, int64(d.header.allocSetOffset))
+			if err != nil {
+				return 0, err
+			}
+
+			// Force sync to ensure the allocation is persisted
+			err = d.file.Sync()
+			if err != nil {
+				// If sync fails, try to mark the block as free again to avoid corruption
+				d.setBlockAllocation(allocSet, blockNum, false)
+				return 0, fmt.Errorf("failed to persist allocation: %w", err)
+			}
+
+			// Return the block number
+			return blockNum, nil
+		}
+	}
+
+	// No available blocks found
+	return 0, fmt.Errorf("no available blocks")
+}
+
+// nextBlock returns the next block number to write to
+func (d *Disk) nextBlock() (uint64, error) {
+	const maxRetries = 10
+	var retryDelay = 5 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Try to find and reserve a block
+		blockNum, err := d.findAndReserveBlock()
+		if err == nil {
+			return blockNum, nil
+		}
+
+		// Check if we need to increase disk size
+		// First check if another goroutine is already increasing the size
+		if atomic.LoadInt32(&d.increasingSize) == 1 {
+			// Another goroutine is handling disk expansion, wait briefly and retry
+			time.Sleep(retryDelay)
+			retryDelay = time.Duration(float64(retryDelay) * 1.5) // Exponential backoff
+			continue
+		}
+
+		// Read allocation set to check current usage
+		allocSet, err := d.readAllocationSet()
+		if err != nil {
+			return 0, err
+		}
+
+		allocatedBlocks := d.countAllocatedBlocks(allocSet)
+		usageRatio := float32(allocatedBlocks) / float32(d.header.totalBlocks)
+
+		if usageRatio >= d.increaseThreshold {
+			// Try to set the increasingSize flag
+			if atomic.CompareAndSwapInt32(&d.increasingSize, 0, 1) {
+				// We're responsible for increasing the disk size
+				err := d.IncreaseSize()
+				atomic.StoreInt32(&d.increasingSize, 0) // Reset flag when done
+
+				if err != nil {
+					return 0, fmt.Errorf("failed to increase disk size: %w", err)
+				}
+
+				// The disk has been expanded, try to find a free block again
+				continue
+			} else {
+				// Another goroutine is handling the expansion, wait and retry
+				time.Sleep(retryDelay)
+				retryDelay = time.Duration(float64(retryDelay) * 1.5) // Exponential backoff
+				continue
+			}
+		}
+
+		// If we get here, no blocks are available, and we don't need to expand
+		// Wait a bit and retry once more
+		if attempt < maxRetries-1 {
+			time.Sleep(retryDelay)
+			continue
+		}
+	}
+
+	// After all retries, if we still couldn't get a block
+	return 0, fmt.Errorf("no available blocks after multiple retries")
+}
+
+// IncreaseSize increases the size of the disk
+func (d *Disk) IncreaseSize() error {
+	// Acquire write locks
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	d.allocSetLock.Lock()
+	defer d.allocSetLock.Unlock()
+
+	// Calculate new size
+	oldBlocks := d.header.totalBlocks
+	newBlocks := oldBlocks * uint64(d.multiplier)
+
+	// Calculate new allocation set size
+	newAllocSetSize := (newBlocks + 7) / 8 // Round up to nearest byte
+
+	// Read current allocation set
+	currentAllocSet, err := d.readAllocationSetNoLock()
+	if err != nil {
+		return fmt.Errorf("failed to read allocation set: %w", err)
+	}
+
+	// Create new allocation set
+	newAllocSet := make([]byte, newAllocSetSize)
+	copy(newAllocSet, currentAllocSet)
+
+	// If the allocation set needs to be moved due to size increase
+	if newAllocSetSize > d.header.allocSetSize {
+		// Update header
+		d.header.allocSetSize = newAllocSetSize
+
+		// The data blocks may need to be moved if the allocation set grew
+		oldDataBlocksOffset := d.header.dataBlocksOffset
+		d.header.dataBlocksOffset = d.header.allocSetOffset + alignToBlockSize(newAllocSetSize, uint64(d.header.blockSize))
+
+		// If the data blocks need to be moved
+		if d.header.dataBlocksOffset > oldDataBlocksOffset {
+			// This is a complex operation - we need to move all data blocks
+			// We'll do this from back to front to avoid overwriting data
+
+			for blockNum := oldBlocks - 1; blockNum >= 0; blockNum-- {
+				// Calculate old and new offsets
+				oldOffset := int64(oldDataBlocksOffset + (blockNum * uint64(d.header.blockSize)))
+				newOffset := d.blockToOffset(blockNum) // Uses the updated header
+
+				// Read the block data
+				blockData := make([]byte, d.header.blockSize)
+				_, err := d.file.ReadAt(blockData, oldOffset)
+				if err != nil {
+					return fmt.Errorf("failed to read block %d during resize: %w", blockNum, err)
+				}
+
+				// Write to new location
+				_, err = d.file.WriteAt(blockData, newOffset)
+				if err != nil {
+					return fmt.Errorf("failed to write block %d during resize: %w", blockNum, err)
+				}
+
+				// If we hit block 0, we're done
+				if blockNum == 0 {
+					break
+				}
+			}
+		}
+	}
+
+	// Write the updated allocation set
+	_, err = d.file.WriteAt(newAllocSet, int64(d.header.allocSetOffset))
+	if err != nil {
+		return fmt.Errorf("failed to write updated allocation set: %w", err)
+	}
+
+	// Extend the file with new empty blocks
+	emptyBlock := make([]byte, d.header.blockSize)
+	for i := oldBlocks; i < newBlocks; i++ {
+		offset := d.blockToOffset(i)
+		_, err = d.file.WriteAt(emptyBlock, offset)
+		if err != nil {
+			return fmt.Errorf("failed to initialize new block %d: %w", i, err)
+		}
+	}
+
+	// Update the header with new total blocks
+	d.header.totalBlocks = newBlocks
+
+	// Write updated header
+	err = d.writeHeader()
+	if err != nil {
+		return fmt.Errorf("failed to update header after resize: %w", err)
+	}
+
+	// Ensure changes are persisted
+	err = d.file.Sync()
+	if err != nil {
+		return fmt.Errorf("failed to sync after resize: %w", err)
+	}
+
+	// Expand block locks slice
+	newBlockLocks := make([]*sync.RWMutex, newBlocks)
+	copy(newBlockLocks, d.blockLocks)
+
+	// Initialize new locks
+	for i := oldBlocks; i < newBlocks; i++ {
+		newBlockLocks[i] = &sync.RWMutex{}
+	}
+
+	d.blockLocks = newBlockLocks
+
+	return nil
+}
+
+// Write writes data to a block and returns the block number
+func (d *Disk) Write(chunk []byte) (uint64, error) {
+	// Check chunk size first
+	if uint(len(chunk)) > uint(d.header.blockSize) {
+		return 0, fmt.Errorf("chunk size %d exceeds block size %d", len(chunk), d.header.blockSize)
+	}
+
+	// Use retry loop to handle potential temporary issues
+	const maxRetries = 5
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Find and reserve the next available block
+		blockNum, err := d.nextBlock()
+		if err != nil {
+			lastErr = err
+			// If it's a retriable error, wait and continue
+			if err.Error() == "no available blocks" ||
+				err.Error() == "no available blocks after multiple retries" {
+				time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+				continue
+			}
+			return 0, err
+		}
+
+		// Write the data to the block (without updating allocation set again)
+		err = d.writeAtWithoutAllocationUpdate(chunk, blockNum)
+		if err != nil {
+			// If write fails, try to mark the block as free again
+			_ = d.updateAllocationSet(blockNum, 0)
+			lastErr = err
+			continue
+		}
+
+		// Success
+		return blockNum, nil
+	}
+
+	// If we get here, all attempts failed
+	return 0, fmt.Errorf("failed to write data after multiple attempts: %w", lastErr)
+}
+
+// writeAtWithoutAllocationUpdate writes data to a block without updating the allocation set
+func (d *Disk) writeAtWithoutAllocationUpdate(chunk []byte, block uint64) error {
+	// Validate block number
+	if block >= d.header.totalBlocks {
+		return fmt.Errorf("block number %d out of range (max: %d)", block, d.header.totalBlocks-1)
+	}
+
+	// Acquire lock for the specific block
+	if int(block) < len(d.blockLocks) && d.blockLocks[block] != nil {
+		d.blockLocks[block].Lock()
+		defer d.blockLocks[block].Unlock()
+	} else {
+		return fmt.Errorf("block lock not initialized for block %d", block)
+	}
+
+	// Calculate offset for the block
+	offset := d.blockToOffset(block)
+
+	// Pad the chunk if needed
+	paddedChunk := chunk
+	if uint(len(chunk)) < uint(d.header.blockSize) {
+		paddedChunk = make([]byte, d.header.blockSize)
+		copy(paddedChunk, chunk)
+	}
+
+	// Write to the file
+	_, err := d.file.WriteAt(paddedChunk, offset)
+	return err
+}
+
+// WriteAt writes data to a block at a specific block number
+func (d *Disk) WriteAt(chunk []byte, block uint64) error {
+	// Validate block number
+	if block >= d.header.totalBlocks {
+		return fmt.Errorf("block number %d out of range (max: %d)", block, d.header.totalBlocks-1)
+	}
+
+	// Check chunk size
+	if uint(len(chunk)) > uint(d.header.blockSize) {
+		return fmt.Errorf("chunk size %d exceeds block size %d", len(chunk), d.header.blockSize)
+	}
+
+	// Acquire lock for the specific block
+	if int(block) < len(d.blockLocks) && d.blockLocks[block] != nil {
+		d.blockLocks[block].Lock()
+		defer d.blockLocks[block].Unlock()
+	} else {
+		return fmt.Errorf("block lock not initialized for block %d", block)
+	}
+
+	// Calculate offset for the block
+	offset := d.blockToOffset(block)
+
+	// Pad the chunk if needed
+	paddedChunk := chunk
+	if uint(len(chunk)) < uint(d.header.blockSize) {
+		paddedChunk = make([]byte, d.header.blockSize)
+		copy(paddedChunk, chunk)
+	}
+
+	// Write to the file
+	_, err := d.file.WriteAt(paddedChunk, offset)
+	if err != nil {
+		return err
+	}
+
+	// Update allocation set to mark this block as used
+	return d.updateAllocationSet(block, 1)
+}
+
+// ReadAt reads data from a specific block
+func (d *Disk) ReadAt(block uint64) ([]byte, error) {
+	// Validate block number
+	if block >= d.header.totalBlocks {
+		return nil, fmt.Errorf("block number %d out of range (max: %d)", block, d.header.totalBlocks-1)
+	}
+
+	// Acquire read lock for the specific block
+	if int(block) < len(d.blockLocks) && d.blockLocks[block] != nil {
+		d.blockLocks[block].RLock()
+		defer d.blockLocks[block].RUnlock()
+	} else {
+		return nil, fmt.Errorf("block lock not initialized for block %d", block)
+	}
+
+	// Calculate offset for the block
+	offset := d.blockToOffset(block)
+
+	// Read data from the block
+	data := make([]byte, d.header.blockSize)
+	_, err := d.file.ReadAt(data, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+// Delete marks a block as free in the allocation set
+func (d *Disk) Delete(block uint64) error {
+	// Validate block number
+	if block >= d.header.totalBlocks {
+		return fmt.Errorf("block number %d out of range (max: %d)", block, d.header.totalBlocks-1)
+	}
+
+	// Acquire write lock for the specific block
+	if int(block) < len(d.blockLocks) && d.blockLocks[block] != nil {
+		d.blockLocks[block].Lock()
+		defer d.blockLocks[block].Unlock()
+	} else {
+		return fmt.Errorf("block lock not initialized for block %d", block)
+	}
+
+	// Update allocation set to mark this block as free (0)
+	return d.updateAllocationSet(block, 0)
 }
