@@ -250,6 +250,27 @@ if err != nil {
 }
 ```
 
+
+### Updating Files
+
+#### Updating a file by block ID
+```go
+newData := []byte("Updated content for the file")
+err = vfs.UpdateFile(fileBlock, newData)
+if err != nil {
+    // handle error
+}
+```
+
+#### Updating a file by path
+```go
+newData := []byte("Updated content for the file")
+err = vfs.UpdateFileByPath(rootBlock, "myDirectory/myFile.txt", newData)
+if err != nil {
+    // handle error
+}
+```
+
 ### Closing
 Closing a VFSLite instance.
 ```go
@@ -264,3 +285,6 @@ if err != nil {
 - **Appending Data** You can use `AppendData` to add extra data blocks to a file.
 - **Updating Metadata** You can use `UpdateBlockMetadata` to modify metadata using a custom update function.
 - **Getting File Size** You can use `GetFileSize` to calculate the size of a file by summing the sizes of its data blocks.
+
+## C API
+..
