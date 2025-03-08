@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 	"vfslite/disk"
 )
@@ -60,6 +61,24 @@ type VFSLite struct {
 	disk      *disk.Disk // Underlying disk structure
 	blockSize uint       // Size of each block in bytes (configured by user)
 	rootBlock uint64     // The entry point to our disk structure
+}
+
+// StreamWriter provides a way to write large files to the virtual disk
+type StreamWriter struct {
+	vfs          *VFSLite
+	fileBlock    uint64 // The initial file block that contains the file metadata
+	currentData  []byte // Buffer for accumulating data before writing a block
+	maxBlockData uint   // Maximum data size per block (blockSize - HeaderSize - some overhead)
+}
+
+// StreamReader provides a way to read large files from the virtual disk
+type StreamReader struct {
+	vfs           *VFSLite
+	fileBlock     uint64   // The initial file block that contains the file metadata
+	dataBlocks    []uint64 // List of all data blocks for this file
+	currentBlock  int      // Index of the current block being read
+	currentData   []byte   // Data from the current block
+	currentOffset int      // Current offset within the current block
 }
 
 // Open creates or opens a virtual disk
@@ -627,24 +646,6 @@ func (vfs *VFSLite) Close() error {
 	return vfs.disk.Close()
 }
 
-// StreamWriter provides a way to write large files to the virtual disk
-type StreamWriter struct {
-	vfs          *VFSLite
-	fileBlock    uint64 // The initial file block that contains the file metadata
-	currentData  []byte // Buffer for accumulating data before writing a block
-	maxBlockData uint   // Maximum data size per block (blockSize - HeaderSize - some overhead)
-}
-
-// StreamReader provides a way to read large files from the virtual disk
-type StreamReader struct {
-	vfs           *VFSLite
-	fileBlock     uint64   // The initial file block that contains the file metadata
-	dataBlocks    []uint64 // List of all data blocks for this file
-	currentBlock  int      // Index of the current block being read
-	currentData   []byte   // Data from the current block
-	currentOffset int      // Current offset within the current block
-}
-
 // CreateStreamWriter creates a new writer for streaming data to a file
 func (vfs *VFSLite) CreateStreamWriter(parentBlock uint64, fileName string) (*StreamWriter, error) {
 	// Create a file block to hold metadata
@@ -887,4 +888,149 @@ func (vfs *VFSLite) ReadFile(fileBlock uint64) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// GetDirectory finds a directory by path from a starting directory
+// Path segments should be separated by '/' and can be either absolute (starting with '/')
+// or relative to the provided startDir. Supports ".." for parent directory navigation.
+func (vfs *VFSLite) GetDirectory(startDir uint64, path string) (uint64, error) {
+	// If path starts with '/', start from root
+	if strings.HasPrefix(path, "/") {
+		startDir = vfs.rootBlock
+		path = path[1:] // Remove leading '/'
+	}
+
+	// If path is empty or ".", return the starting directory
+	if path == "" || path == "." {
+		return startDir, nil
+	}
+
+	// Split path into components
+	components := strings.Split(path, "/")
+	currentDir := startDir
+
+	// We'll need to maintain a stack of parent directories
+	parentStack := []uint64{startDir}
+
+	for _, component := range components {
+		// Skip empty components (e.g., from "//" in the path)
+		if component == "" {
+			continue
+		}
+
+		// Handle ".." (parent directory)
+		if component == ".." {
+			// Make sure we have a parent to go back to
+			if len(parentStack) <= 1 {
+				return 0, fmt.Errorf("cannot go up from this directory")
+			}
+
+			// Pop the current directory and go back to parent
+			parentStack = parentStack[:len(parentStack)-1]
+			currentDir = parentStack[len(parentStack)-1]
+			continue
+		}
+
+		// Handle "." (current directory) - just skip it
+		if component == "." {
+			continue
+		}
+
+		// Get children of the current directory
+		children, err := vfs.ListChildren(currentDir)
+		if err != nil {
+			return 0, fmt.Errorf("error listing children: %w", err)
+		}
+
+		// Look for matching directory name
+		found := false
+		for _, childBlock := range children {
+			// Check if this is a directory
+			blockType, err := vfs.GetBlockType(childBlock)
+			if err != nil {
+				return 0, fmt.Errorf("error getting block type: %w", err)
+			}
+
+			if blockType == BlockTypeDirectory {
+				// Get the directory name
+				nameBytes, err := vfs.GetBlockData(childBlock)
+				if err != nil {
+					return 0, fmt.Errorf("error getting block data: %w", err)
+				}
+
+				name := string(nameBytes)
+				if name == component {
+					// Found the directory, continue to the next path component
+					currentDir = childBlock
+					parentStack = append(parentStack, currentDir) // Keep track of this directory
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			return 0, fmt.Errorf("directory not found: %s", component)
+		}
+	}
+
+	return currentDir, nil
+}
+
+// GetFile finds a file by name within a directory
+func (vfs *VFSLite) GetFile(dirBlock uint64, fileName string) (uint64, error) {
+	// Get children of the directory
+	children, err := vfs.ListChildren(dirBlock)
+	if err != nil {
+		return 0, fmt.Errorf("error listing children: %w", err)
+	}
+
+	// Look for matching file name
+	for _, childBlock := range children {
+		// Check if this is a file
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return 0, fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeFile {
+			// Get the file name
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return 0, fmt.Errorf("error getting block data: %w", err)
+			}
+
+			name := string(nameBytes)
+			if name == fileName {
+				return childBlock, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("file not found: %s", fileName)
+}
+
+// GetFileByPath finds a file by path from a starting directory
+func (vfs *VFSLite) GetFileByPath(startDir uint64, path string) (uint64, error) {
+	// Split the path into directory path and filename
+	lastSlash := strings.LastIndex(path, "/")
+	var dirPath, fileName string
+
+	if lastSlash == -1 {
+		// No slashes, file is in the starting directory
+		dirPath = ""
+		fileName = path
+	} else {
+		dirPath = path[:lastSlash]
+		fileName = path[lastSlash+1:]
+	}
+
+	// First get the directory
+	dirBlock, err := vfs.GetDirectory(startDir, dirPath)
+	if err != nil {
+		return 0, err
+	}
+
+	// Then get the file in that directory
+	return vfs.GetFile(dirBlock, fileName)
 }
