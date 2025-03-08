@@ -1019,3 +1019,426 @@ func (vfs *VFSLite) GetFileByPath(startDir uint64, path string) (uint64, error) 
 	// Then get the file in that directory
 	return vfs.GetFile(dirBlock, fileName)
 }
+
+// DeleteFile removes a file and all its data blocks
+func (vfs *VFSLite) DeleteFile(fileBlock uint64) error {
+	if fileBlock == SuperblockNum {
+		return fmt.Errorf("cannot delete superblock (0)")
+	}
+
+	// First, verify this is a file block
+	blockType, err := vfs.GetBlockType(fileBlock)
+	if err != nil {
+		return fmt.Errorf("error getting block type: %w", err)
+	}
+
+	if blockType != BlockTypeFile {
+		return fmt.Errorf("block %d is not a file block", fileBlock)
+	}
+
+	// Get all data blocks for this file
+	dataBlocks, err := vfs.ListChildren(fileBlock)
+	if err != nil {
+		return fmt.Errorf("failed to list data blocks: %w", err)
+	}
+
+	// Delete all data blocks
+	for _, blockNum := range dataBlocks {
+		if err := vfs.disk.Delete(blockNum); err != nil {
+			return fmt.Errorf("failed to delete data block %d: %w", blockNum, err)
+		}
+	}
+
+	// Delete the file block itself
+	if err := vfs.disk.Delete(fileBlock); err != nil {
+		return fmt.Errorf("failed to delete file block %d: %w", fileBlock, err)
+	}
+
+	return nil
+}
+
+// DeleteFileFromParent removes a file from its parent directory and deletes the file
+func (vfs *VFSLite) DeleteFileFromParent(parentDir uint64, fileName string) error {
+	if parentDir == SuperblockNum {
+		return fmt.Errorf("cannot use superblock (0) as parent directory")
+	}
+
+	// First, get the file block
+	fileBlock, err := vfs.GetFile(parentDir, fileName)
+	if err != nil {
+		return err
+	}
+
+	// Remove the file from the parent directory's children
+	if err := vfs.RemoveChild(parentDir, fileBlock); err != nil {
+		return fmt.Errorf("failed to remove file reference from parent: %w", err)
+	}
+
+	// Now delete the file and its data blocks
+	return vfs.DeleteFile(fileBlock)
+}
+
+// RemoveChild removes a child reference from a parent block
+func (vfs *VFSLite) RemoveChild(parentBlock uint64, childBlock uint64) error {
+	if parentBlock == SuperblockNum || childBlock == SuperblockNum {
+		return fmt.Errorf("cannot use superblock (0) in parent-child relationship")
+	}
+
+	// Read the parent block
+	header, meta, data, references, err := vfs.readBlock(parentBlock)
+	if err != nil {
+		return err
+	}
+
+	// Find and remove the child reference
+	found := false
+	newReferences := make([]uint64, 0, len(references))
+	for _, ref := range references {
+		if ref != childBlock {
+			newReferences = append(newReferences, ref)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("child block %d not found in parent %d", childBlock, parentBlock)
+	}
+
+	// Write back the block with the updated references
+	return vfs.writeBlock(parentBlock, header, meta, data, newReferences)
+}
+
+// DeleteDirectory removes a directory and all its contents recursively
+func (vfs *VFSLite) DeleteDirectory(dirBlock uint64) error {
+	if dirBlock == SuperblockNum {
+		return fmt.Errorf("cannot delete superblock (0)")
+	}
+
+	// First, verify this is a directory block
+	blockType, err := vfs.GetBlockType(dirBlock)
+	if err != nil {
+		return fmt.Errorf("error getting block type: %w", err)
+	}
+
+	if blockType != BlockTypeDirectory {
+		return fmt.Errorf("block %d is not a directory block", dirBlock)
+	}
+
+	// Get all children of this directory
+	children, err := vfs.ListChildren(dirBlock)
+	if err != nil {
+		return fmt.Errorf("failed to list children: %w", err)
+	}
+
+	// Recursively delete all children
+	for _, childBlock := range children {
+		childType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type for child %d: %w", childBlock, err)
+		}
+
+		if childType == BlockTypeDirectory {
+			// Recursively delete subdirectory
+			if err := vfs.DeleteDirectory(childBlock); err != nil {
+				return err
+			}
+		} else if childType == BlockTypeFile {
+			// Delete file and its data blocks
+			if err := vfs.DeleteFile(childBlock); err != nil {
+				return err
+			}
+		} else {
+			// Unknown block type, just delete it directly
+			if err := vfs.disk.Delete(childBlock); err != nil {
+				return fmt.Errorf("failed to delete block %d: %w", childBlock, err)
+			}
+		}
+	}
+
+	// Delete the directory block itself
+	if err := vfs.disk.Delete(dirBlock); err != nil {
+		return fmt.Errorf("failed to delete directory block %d: %w", dirBlock, err)
+	}
+
+	return nil
+}
+
+// DeleteDirectoryFromParent removes a directory from its parent and deletes it recursively
+func (vfs *VFSLite) DeleteDirectoryFromParent(parentDir uint64, dirName string) error {
+	if parentDir == SuperblockNum {
+		return fmt.Errorf("cannot use superblock (0) as parent directory")
+	}
+
+	// Get children of the directory
+	children, err := vfs.ListChildren(parentDir)
+	if err != nil {
+		return fmt.Errorf("error listing children: %w", err)
+	}
+
+	// Look for matching directory name
+	var dirBlock uint64
+	dirFound := false
+
+	for _, childBlock := range children {
+		// Check if this is a directory
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeDirectory {
+			// Get the directory name
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return fmt.Errorf("error getting block data: %w", err)
+			}
+
+			name := string(nameBytes)
+			if name == dirName {
+				dirBlock = childBlock
+				dirFound = true
+				break
+			}
+		}
+	}
+
+	if !dirFound {
+		return fmt.Errorf("directory not found: %s", dirName)
+	}
+
+	// Remove the directory from the parent's children
+	if err := vfs.RemoveChild(parentDir, dirBlock); err != nil {
+		return fmt.Errorf("failed to remove directory reference from parent: %w", err)
+	}
+
+	// Now delete the directory and all its contents
+	return vfs.DeleteDirectory(dirBlock)
+}
+
+// DeleteByPath deletes a file or directory at the specified path
+func (vfs *VFSLite) DeleteByPath(startDir uint64, path string) error {
+	// Split the path into directory path and name
+	lastSlash := strings.LastIndex(path, "/")
+	var dirPath, name string
+
+	if lastSlash == -1 {
+		// No slashes, item is in the starting directory
+		dirPath = ""
+		name = path
+	} else {
+		dirPath = path[:lastSlash]
+		name = path[lastSlash+1:]
+	}
+
+	// First get the parent directory
+	parentDir, err := vfs.GetDirectory(startDir, dirPath)
+	if err != nil {
+		return err
+	}
+
+	// Try to find it as a file first
+	_, err = vfs.GetFile(parentDir, name)
+	if err == nil {
+		// It's a file, delete it
+		return vfs.DeleteFileFromParent(parentDir, name)
+	}
+
+	// Try to find it as a directory
+	children, err := vfs.ListChildren(parentDir)
+	if err != nil {
+		return fmt.Errorf("error listing children: %w", err)
+	}
+
+	for _, childBlock := range children {
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeDirectory {
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return fmt.Errorf("error getting block data: %w", err)
+			}
+
+			if string(nameBytes) == name {
+				// It's a directory, delete it
+				return vfs.DeleteDirectoryFromParent(parentDir, name)
+			}
+		}
+	}
+
+	return fmt.Errorf("no file or directory found at path: %s", path)
+}
+
+// RenameBlock updates the name of a file or directory block
+func (vfs *VFSLite) RenameBlock(blockNum uint64, newName string) error {
+	if blockNum == SuperblockNum {
+		return fmt.Errorf("cannot rename superblock (0)")
+	}
+
+	// Read the block
+	header, meta, _, references, err := vfs.readBlock(blockNum)
+	if err != nil {
+		return fmt.Errorf("failed to read block %d: %w", blockNum, err)
+	}
+
+	// Verify this is a file or directory block
+	if header.Type != BlockTypeFile && header.Type != BlockTypeDirectory {
+		return fmt.Errorf("block %d is not a file or directory block", blockNum)
+	}
+
+	// Update the block with the new name
+	err = vfs.writeBlock(blockNum, header, meta, []byte(newName), references)
+	if err != nil {
+		return fmt.Errorf("failed to write block %d: %w", blockNum, err)
+	}
+
+	return nil
+}
+
+// RenameFile renames a file in a directory
+func (vfs *VFSLite) RenameFile(dirBlock uint64, oldName, newName string) error {
+	if dirBlock == SuperblockNum {
+		return fmt.Errorf("cannot use superblock (0) as directory")
+	}
+
+	// First, get the file block
+	fileBlock, err := vfs.GetFile(dirBlock, oldName)
+	if err != nil {
+		return fmt.Errorf("file not found: %s - %w", oldName, err)
+	}
+
+	// Verify the new name doesn't already exist
+	_, err = vfs.GetFile(dirBlock, newName)
+	if err == nil {
+		return fmt.Errorf("file already exists: %s", newName)
+	}
+
+	// Rename the file block
+	return vfs.RenameBlock(fileBlock, newName)
+}
+
+// RenameDirectory renames a directory in a parent directory
+func (vfs *VFSLite) RenameDirectory(parentDir uint64, oldName, newName string) error {
+	if parentDir == SuperblockNum {
+		return fmt.Errorf("cannot use superblock (0) as parent directory")
+	}
+
+	// First, verify the directory exists
+	children, err := vfs.ListChildren(parentDir)
+	if err != nil {
+		return fmt.Errorf("error listing children: %w", err)
+	}
+
+	var dirBlock uint64
+	dirFound := false
+
+	// Find the directory with the old name
+	for _, childBlock := range children {
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeDirectory {
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return fmt.Errorf("error getting block data: %w", err)
+			}
+
+			if string(nameBytes) == oldName {
+				dirBlock = childBlock
+				dirFound = true
+				break
+			}
+		}
+	}
+
+	if !dirFound {
+		return fmt.Errorf("directory not found: %s", oldName)
+	}
+
+	// Verify the new name doesn't already exist
+	for _, childBlock := range children {
+		if childBlock == dirBlock {
+			continue // Skip the directory we're renaming
+		}
+
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeDirectory {
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return fmt.Errorf("error getting block data: %w", err)
+			}
+
+			if string(nameBytes) == newName {
+				return fmt.Errorf("directory already exists: %s", newName)
+			}
+		}
+	}
+
+	// Rename the directory block
+	return vfs.RenameBlock(dirBlock, newName)
+}
+
+// RenameByPath renames a file or directory at the specified path
+func (vfs *VFSLite) RenameByPath(startDir uint64, path string, newName string) error {
+	// Split the path into directory path and name
+	lastSlash := strings.LastIndex(path, "/")
+	var dirPath, name string
+
+	if lastSlash == -1 {
+		// No slashes, item is in the starting directory
+		dirPath = ""
+		name = path
+	} else {
+		dirPath = path[:lastSlash]
+		name = path[lastSlash+1:]
+	}
+
+	// First get the parent directory
+	parentDir, err := vfs.GetDirectory(startDir, dirPath)
+	if err != nil {
+		return err
+	}
+
+	// Try to find it as a file first
+	_, err = vfs.GetFile(parentDir, name)
+	if err == nil {
+		// It's a file, rename it
+		return vfs.RenameFile(parentDir, name, newName)
+	}
+
+	// Try to find it as a directory
+	children, err := vfs.ListChildren(parentDir)
+	if err != nil {
+		return fmt.Errorf("error listing children: %w", err)
+	}
+
+	for _, childBlock := range children {
+		blockType, err := vfs.GetBlockType(childBlock)
+		if err != nil {
+			return fmt.Errorf("error getting block type: %w", err)
+		}
+
+		if blockType == BlockTypeDirectory {
+			nameBytes, err := vfs.GetBlockData(childBlock)
+			if err != nil {
+				return fmt.Errorf("error getting block data: %w", err)
+			}
+
+			if string(nameBytes) == name {
+				// It's a directory, rename it
+				return vfs.RenameDirectory(parentDir, name, newName)
+			}
+		}
+	}
+
+	return fmt.Errorf("no file or directory found at path: %s", path)
+}

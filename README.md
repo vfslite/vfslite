@@ -166,6 +166,90 @@ if err != nil {
 }
 ```
 
+### Deleting Files and Directories
+VFSLite supports several methods for deleting files and directories.
+
+#### Deleting Files
+```go
+// Delete a file by block ID (removes file and all its data blocks)
+err = vfs.DeleteFile(fileBlock)
+if err != nil {
+    // handle error
+}
+
+// Delete a file by name from a parent directory
+err = vfs.DeleteFileFromParent(dirBlock, "myFile.txt")
+if err != nil {
+    // handle error
+}
+```
+
+#### Deleting Directories
+```go
+// Delete a directory by block ID (recursively removes all contents)
+err = vfs.DeleteDirectory(dirBlock)
+if err != nil {
+    // handle error
+}
+
+// Delete a directory by name from a parent directory
+err = vfs.DeleteDirectoryFromParent(parentDir, "myDirectory")
+if err != nil {
+    // handle error
+}
+```
+
+#### Deleting by Path
+```go
+// Delete a file or directory by path
+err = vfs.DeleteByPath(rootBlock, "myDirectory/myFile.txt")
+if err != nil {
+    // handle error
+}
+
+// Delete a directory and all its contents by path
+err = vfs.DeleteByPath(rootBlock, "myDirectory")
+if err != nil {
+    // handle error
+}
+```
+
+### Renaming Files and Directories
+VFSLite supports renaming files and directories.
+
+#### Renaming Files
+```go
+// Rename a file in a directory
+err = vfs.RenameFile(dirBlock, "oldFileName.txt", "newFileName.txt")
+if err != nil {
+    // handle error
+}
+```
+
+#### Renaming Directories
+```go
+// Rename a directory in a parent directory
+err = vfs.RenameDirectory(parentDir, "oldDirName", "newDirName")
+if err != nil {
+    // handle error
+}
+```
+
+#### Renaming by Path
+```go
+// Rename a file or directory using a path
+err = vfs.RenameByPath(rootBlock, "myDirectory/oldFile.txt", "newFile.txt")
+if err != nil {
+    // handle error
+}
+
+// Rename a directory using a path
+err = vfs.RenameByPath(rootBlock, "myDirectory/oldSubDir", "newSubDir")
+if err != nil {
+    // handle error
+}
+```
+
 ### Closing
 Closing a VFSLite instance.
 ```go
