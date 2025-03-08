@@ -14,6 +14,11 @@ VFSLite is a lightweight, single file virtual file system.  VFSLite can be acces
 
 ## GO API
 
+### Import
+```go
+import "github.com/vfslite/vfslite"
+```
+
 ### Opening a Virtual Disk
 To create or open a virtual disk, use the `Open` function. The following example opens (or creates) a disk file with a specified block size and an initial number of blocks:
 ```go
@@ -53,6 +58,7 @@ VFSLite supports two primary methods for file operations.
 **For small files** Use the `WriteFile` function which writes an entire file at once.
 ```go
 data := []byte("Hello, VFSLite!")
+
 fileBlock, err := vfs.WriteFile(rootBlock, "myFile.txt", data)
 if err != nil {
     // handle error
@@ -65,10 +71,12 @@ writer, err := vfs.CreateStreamWriter(rootBlock, "largeFile.txt")
 if err != nil {
     // handle error
 }
+
 _, err = writer.Write(largeData)
 if err != nil {
     // handle error
 }
+
 err = writer.Close()
 if err != nil {
     // handle error
@@ -82,6 +90,7 @@ data, err := vfs.ReadFile(fileBlock)
 if err != nil {
     // handle error
 }
+
 fmt.Println(string(data))
 ```
 
@@ -91,6 +100,7 @@ reader, err := vfs.OpenStreamReader(fileBlock)
 if err != nil {
     // handle error
 }
+
 defer reader.Close()
 
 buffer := make([]byte, 1024)
@@ -98,6 +108,7 @@ n, err := reader.Read(buffer)
 if err != nil && err != io.EOF {
     // handle error
 }
+
 fmt.Println(string(buffer[:n]))
 ```
 
@@ -142,13 +153,13 @@ for _, child := range children {
 
 #### Finding Directories and Files by Path
 ```go
-// Retrieve a directory by path:
+// Retrieve a directory by path
 dirBlock, err := vfs.GetDirectory(rootBlock, "myDirectory")
 if err != nil {
     // handle error
 }
 
-// Retrieve a file by path:
+// Retrieve a file by path
 fileBlock, err = vfs.GetFileByPath(rootBlock, "myDirectory/myFile.txt")
 if err != nil {
     // handle error
@@ -156,6 +167,7 @@ if err != nil {
 ```
 
 ### Closing
+Closing a VFSLite instance.
 ```go
 err = vfs.Close()
 if err != nil {
@@ -165,6 +177,6 @@ if err != nil {
 
 
 ### Additional Operations
-- **Appending Data** Use AppendData to add extra data blocks to a file.
-- **Updating Metadata** Use UpdateBlockMetadata to modify metadata using a custom update function.
-- **Getting File Size** Use GetFileSize to calculate the size of a file by summing the sizes of its data blocks.
+- **Appending Data** You can use `AppendData` to add extra data blocks to a file.
+- **Updating Metadata** You can use `UpdateBlockMetadata` to modify metadata using a custom update function.
+- **Getting File Size** You can use `GetFileSize` to calculate the size of a file by summing the sizes of its data blocks.
