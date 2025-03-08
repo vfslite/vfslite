@@ -4,12 +4,13 @@ VFSLite is a lightweight, single file virtual file system.  VFSLite can be acces
 ## Features
 - **Block-Based Filesystem** - VFSLite is a block-based filesystem.  This means that files are stored in used-defined fixed-size blocks.
 - **Single File** - VFSLite is a single file, the entire filesystem is stored in a single file.
--  **Metadata Management** - Custom metadeta can be stored with each file.  This allows for easy storage and retrieval of file metadata.
+- **Metadata Management** - Custom metadeta can be stored with each file.  This allows for easy storage and retrieval of file metadata.
 - **Go and C API** - VFSLite can be accessed via Go or shared C library.
+- **Block Locking** - VFSLite supports granular block RW locking.
+- **Concurrent Safe** - VFSLite is designed to be concurrent safe.  Multiple goroutines can read and write to the filesystem simultaneously.
 - **Hierarchical Structure** - VFSLite supports a hierarchical structure.  This means that you can create directories and subdirectories to organize your files.
 - **Dynamic Disk Expansion** - VFSLite supports automatic dynamic disk expansion.
 - **Stream I/O** - VFSLite supports stream I/O.  This means that you can read and write files in a streaming fashion.
-- **Block Locking** - VFSLite supports granular block RW locking.
 
 ## GO API
 
