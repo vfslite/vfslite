@@ -88,10 +88,10 @@ func Open(diskName string, blockSize uint, initialBlocks uint64) (*VFSLite, erro
 		diskName,
 		os.O_RDWR|os.O_CREATE,
 		0777,
-		blockSize,
-		initialBlocks,
-		2,   // multiplier: double the size when threshold is reached
-		0.8, // increaseThreshold: increase when 80% full
+		blockSize,     // Block size
+		initialBlocks, // Initial number of blocks
+		2,             // Double the size when threshold is reached
+		0.8,           // Increase when 80% full
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open disk: %w", err)
@@ -173,11 +173,11 @@ func Open(diskName string, blockSize uint, initialBlocks uint64) (*VFSLite, erro
 
 		// Make sure we didn't get block 0
 		if rootBlockNum == SuperblockNum {
-			// This shouldn't happen since we already wrote to block 0, but just in case
+			// ** This shouldn't happen since we already wrote to block 0, but just in case
 			return nil, fmt.Errorf("root block was assigned to superblock, which should be reserved")
 		}
 
-		// Update superblock with pointer to root block
+		// We update superblock with pointer to root block
 		superblockData = make([]byte, blockSize)
 		binary.LittleEndian.PutUint64(superblockData, rootBlockNum)
 
@@ -295,7 +295,7 @@ func (vfs *VFSLite) createBlock(blockType uint8, data []byte, meta *Metadata) (u
 		return 0, fmt.Errorf("failed to write block: %w", err)
 	}
 
-	// Safety check: Make sure we didn't accidentally get block 0
+	// We make sure we didn't accidentally get block 0
 	if blockNum == SuperblockNum {
 		return 0, fmt.Errorf("block allocation returned superblock (0), which should be reserved")
 	}
@@ -305,12 +305,10 @@ func (vfs *VFSLite) createBlock(blockType uint8, data []byte, meta *Metadata) (u
 
 // readBlock reads a block and returns its header, data, and references
 func (vfs *VFSLite) readBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte, []uint64, error) {
-	// Safety check: Don't try to read the superblock as a normal block
 	if blockNum == SuperblockNum {
 		return nil, nil, nil, nil, fmt.Errorf("cannot read superblock (0) as a normal block")
 	}
 
-	// Read the block data
 	blockData, err := vfs.disk.ReadAt(blockNum)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed to read block %d: %w", blockNum, err)
@@ -320,8 +318,7 @@ func (vfs *VFSLite) readBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte,
 		fmt.Printf("DEBUG: Reading block %d, first 16 bytes: % x\n", blockNum, blockData[:16])
 	}
 
-	// Deserialize header
-	headerSize := 9 // Type(1) + ChildCount(2) + DataSize(4) + MetaSize(2)
+	headerSize := 9
 	header, err := deserializeHeader(blockData[:headerSize])
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed to deserialize header for block %d: %w", blockNum, err)
@@ -391,15 +388,12 @@ func (vfs *VFSLite) readBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte,
 
 // writeBlock writes a header, data, and references to a block
 func (vfs *VFSLite) writeBlock(blockNum uint64, header *BlockHeader, meta *Metadata, data []byte, references []uint64) error {
-	// Safety check: Don't write to the superblock
 	if blockNum == SuperblockNum {
 		return fmt.Errorf("cannot write to superblock (0) as a normal block")
 	}
 
-	// Update metadata modification time
 	meta.ModifiedOn = time.Now().Unix()
 
-	// Serialize metadata
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("failed to serialize metadata: %w", err)
@@ -410,7 +404,6 @@ func (vfs *VFSLite) writeBlock(blockNum uint64, header *BlockHeader, meta *Metad
 	header.ChildCount = uint16(len(references))
 	header.MetaSize = uint16(len(metaBytes))
 
-	// Serialize header
 	headerBytes, err := serializeHeader(header)
 	if err != nil {
 		return fmt.Errorf("failed to serialize header: %w", err)
@@ -452,7 +445,6 @@ func (vfs *VFSLite) writeBlock(blockNum uint64, header *BlockHeader, meta *Metad
 
 // AddChild adds a child reference to a parent block
 func (vfs *VFSLite) AddChild(parentBlock uint64, childBlock uint64) error {
-	// Don't allow operations involving the superblock
 	if parentBlock == SuperblockNum || childBlock == SuperblockNum {
 		return fmt.Errorf("cannot use superblock (0) in parent-child relationship")
 	}
@@ -472,7 +464,6 @@ func (vfs *VFSLite) AddChild(parentBlock uint64, childBlock uint64) error {
 
 // CreateFileBlock creates a new file block and adds it as a child of the given parent
 func (vfs *VFSLite) CreateFileBlock(parentBlock uint64, fileName string, meta *Metadata) (uint64, error) {
-	// Don't allow operations involving the superblock
 	if parentBlock == SuperblockNum {
 		return 0, fmt.Errorf("cannot use superblock (0) as parent")
 	}
@@ -499,7 +490,6 @@ func (vfs *VFSLite) CreateFileBlock(parentBlock uint64, fileName string, meta *M
 
 // AppendData appends data to a file by creating a data block and linking it
 func (vfs *VFSLite) AppendData(fileBlock uint64, data []byte) error {
-	// Don't allow operations involving the superblock
 	if fileBlock == SuperblockNum {
 		return fmt.Errorf("cannot append data to superblock (0)")
 	}
@@ -516,7 +506,6 @@ func (vfs *VFSLite) AppendData(fileBlock uint64, data []byte) error {
 
 // ListChildren returns all children of a block
 func (vfs *VFSLite) ListChildren(blockNum uint64) ([]uint64, error) {
-	// Don't allow operations involving the superblock
 	if blockNum == SuperblockNum {
 		return nil, fmt.Errorf("cannot list children of superblock (0)")
 	}
@@ -532,7 +521,6 @@ func (vfs *VFSLite) GetRootBlock() uint64 {
 
 // CreateDirectoryBlock creates a directory block and adds it as a child of the parent
 func (vfs *VFSLite) CreateDirectoryBlock(parentBlock uint64, dirName string, meta *Metadata) (uint64, error) {
-	// Don't allow operations involving the superblock
 	if parentBlock == SuperblockNum {
 		return 0, fmt.Errorf("cannot use superblock (0) as parent")
 	}
@@ -559,7 +547,6 @@ func (vfs *VFSLite) CreateDirectoryBlock(parentBlock uint64, dirName string, met
 
 // GetBlockMetadata returns the metadata for a block
 func (vfs *VFSLite) GetBlockMetadata(blockNum uint64) (*Metadata, error) {
-	// Don't allow operations involving the superblock
 	if blockNum == SuperblockNum {
 		return nil, fmt.Errorf("cannot get metadata from superblock (0)")
 	}
@@ -570,7 +557,6 @@ func (vfs *VFSLite) GetBlockMetadata(blockNum uint64) (*Metadata, error) {
 
 // UpdateBlockMetadata updates the metadata for a block
 func (vfs *VFSLite) UpdateBlockMetadata(blockNum uint64, updateFn func(*Metadata)) error {
-	// Don't allow operations involving the superblock
 	if blockNum == SuperblockNum {
 		return fmt.Errorf("cannot update metadata for superblock (0)")
 	}
@@ -614,7 +600,6 @@ func (vfs *VFSLite) GetExtraMetadata(blockNum uint64, key string) (string, bool,
 
 // GetBlockData returns the data stored in a block
 func (vfs *VFSLite) GetBlockData(blockNum uint64) ([]byte, error) {
-	// Don't allow operations involving the superblock
 	if blockNum == SuperblockNum {
 		return nil, fmt.Errorf("cannot get data from superblock (0)")
 	}
@@ -625,7 +610,6 @@ func (vfs *VFSLite) GetBlockData(blockNum uint64) ([]byte, error) {
 
 // GetBlockType returns the type of a block
 func (vfs *VFSLite) GetBlockType(blockNum uint64) (uint8, error) {
-	// Don't allow operations involving the superblock
 	if blockNum == SuperblockNum {
 		return 0, fmt.Errorf("cannot get type of superblock (0)")
 	}
@@ -945,7 +929,8 @@ func (vfs *VFSLite) GetDirectory(startDir uint64, path string) (uint64, error) {
 		// Look for matching directory name
 		found := false
 		for _, childBlock := range children {
-			// Check if this is a directory
+
+			// Check if this is a directory..
 			blockType, err := vfs.GetBlockType(childBlock)
 			if err != nil {
 				return 0, fmt.Errorf("error getting block type: %w", err)
