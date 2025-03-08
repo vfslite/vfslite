@@ -1,4 +1,7 @@
-# vfslite
+<div>
+    <h1 align="left"><img width="256" src="artwork/vfsl_logo.png"></h1>
+</div>
+
 VFSLite is a lightweight, single file virtual file system.  VFSLite can be accessed via Go or shared C library.
 
 ## Features
