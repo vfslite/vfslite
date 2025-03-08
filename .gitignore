@@ -10,3 +10,5 @@ go.work.sum
 .env
 .idea
 vfslite
+c/vfslite.h
+c/vfslite.so

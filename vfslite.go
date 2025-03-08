@@ -303,6 +303,11 @@ func (vfs *VFSLite) createBlock(blockType uint8, data []byte, meta *Metadata) (u
 	return blockNum, nil
 }
 
+func (vfs *VFSLite) ReadBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte, []uint64, error) {
+	return vfs.readBlock(blockNum)
+
+}
+
 // readBlock reads a block and returns its header, data, and references
 func (vfs *VFSLite) readBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte, []uint64, error) {
 	if blockNum == SuperblockNum {
@@ -384,6 +389,10 @@ func (vfs *VFSLite) readBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte,
 	}
 
 	return header, &meta, data, references, nil
+}
+
+func (vfs *VFSLite) WriteBlock(blockNum uint64, header *BlockHeader, meta *Metadata, data []byte, references []uint64) error {
+	return vfs.writeBlock(blockNum, header, meta, data, references)
 }
 
 // writeBlock writes a header, data, and references to a block
@@ -1441,4 +1450,85 @@ func (vfs *VFSLite) RenameByPath(startDir uint64, path string, newName string) e
 	}
 
 	return fmt.Errorf("no file or directory found at path: %s", path)
+}
+
+// UpdateFile updates an existing file with new data by truncating it
+// and writing the new content.
+func (vfs *VFSLite) UpdateFile(fileBlock uint64, data []byte) error {
+	if fileBlock == SuperblockNum {
+		return fmt.Errorf("cannot update superblock (0)")
+	}
+
+	// First, verify this is a file block
+	blockType, err := vfs.GetBlockType(fileBlock)
+	if err != nil {
+		return fmt.Errorf("error getting block type: %w", err)
+	}
+
+	if blockType != BlockTypeFile {
+		return fmt.Errorf("block %d is not a file block", fileBlock)
+	}
+
+	// Get all data blocks for this file
+	dataBlocks, err := vfs.ListChildren(fileBlock)
+	if err != nil {
+		return fmt.Errorf("failed to list data blocks: %w", err)
+	}
+
+	// Get file metadata and name
+	header, meta, fileName, _, err := vfs.readBlock(fileBlock)
+	if err != nil {
+		return fmt.Errorf("failed to read file block: %w", err)
+	}
+
+	// Update modification time
+	meta.ModifiedOn = time.Now().Unix()
+
+	// Delete all existing data blocks
+	for _, blockNum := range dataBlocks {
+		if err := vfs.disk.Delete(blockNum); err != nil {
+			return fmt.Errorf("failed to delete data block %d: %w", blockNum, err)
+		}
+	}
+
+	// Write back the file block with no children (truncated file)
+	err = vfs.writeBlock(fileBlock, header, meta, fileName, []uint64{})
+	if err != nil {
+		return fmt.Errorf("failed to update file block: %w", err)
+	}
+
+	// If there's new data to write, create new data blocks
+	if len(data) > 0 {
+		// Use StreamWriter for consistent behavior with WriteFile
+		writer := &StreamWriter{
+			vfs:          vfs,
+			fileBlock:    fileBlock,
+			currentData:  make([]byte, 0, vfs.blockSize-HeaderSize-64),
+			maxBlockData: vfs.blockSize - HeaderSize - 64, // Same calculation as in CreateStreamWriter
+		}
+
+		_, err = writer.Write(data)
+		if err != nil {
+			return fmt.Errorf("failed to write data: %w", err)
+		}
+
+		err = writer.Close()
+		if err != nil {
+			return fmt.Errorf("failed to close stream writer: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// UpdateFileByPath updates an existing file at the specified path with new data
+func (vfs *VFSLite) UpdateFileByPath(startDir uint64, path string, data []byte) error {
+	// Get the file block
+	fileBlock, err := vfs.GetFileByPath(startDir, path)
+	if err != nil {
+		return fmt.Errorf("failed to find file at path %s: %w", path, err)
+	}
+
+	// Update the file
+	return vfs.UpdateFile(fileBlock, data)
 }
