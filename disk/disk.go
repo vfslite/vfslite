@@ -687,6 +687,10 @@ func (d *Disk) ReadAt(block uint64) ([]byte, error) {
 	return data, nil
 }
 
+func (d *Disk) File() *os.File {
+	return d.file
+}
+
 // Delete marks a block as free in the allocation set
 func (d *Disk) Delete(block uint64) error {
 	// Validate block number

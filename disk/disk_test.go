@@ -17,8 +17,10 @@
 package disk
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +52,122 @@ func TestOpenNewDisk(t *testing.T) {
 	}
 	if disk.header.totalBlocks != 100 {
 		t.Errorf("Expected total blocks 100, got %d", disk.header.totalBlocks)
+	}
+}
+
+func TestDiskBasicFunctionality(t *testing.T) {
+	// Test parameters
+	testDir := t.TempDir()
+	testPath := filepath.Join(testDir, "test_disk.vfsl")
+	blockSize := uint(4096)
+	initialBlocks := uint64(10)
+	multiplier := uint(2)
+	increaseThreshold := float32(0.8)
+
+	// Test data to write to disk
+	testData := []byte("Hello, VFSLite! This is a test message to verify disk read/write functionality.")
+
+	// 1. Create and open a new disk
+	d, err := Open(
+		testPath,
+		os.O_RDWR|os.O_CREATE,
+		0644,
+		blockSize,
+		initialBlocks,
+		multiplier,
+		increaseThreshold,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create disk: %v", err)
+	}
+
+	// 2. Write data to the disk
+	blockNum, err := d.Write(testData)
+	if err != nil {
+		t.Fatalf("Failed to write data: %v", err)
+	}
+	t.Logf("Data written to block: %d", blockNum)
+
+	// Write a second block of data
+	testData2 := []byte("This is a second block of test data that we'll verify after reopening the disk.")
+	blockNum2, err := d.Write(testData2)
+	if err != nil {
+		t.Fatalf("Failed to write second data block: %v", err)
+	}
+	t.Logf("Second data written to block: %d", blockNum2)
+
+	// 3. Close the disk
+	err = d.Close()
+	if err != nil {
+		t.Fatalf("Failed to close disk: %v", err)
+	}
+
+	// 4. Reopen the disk
+	d2, err := Open(
+		testPath,
+		os.O_RDWR,
+		0644,
+		blockSize,
+		initialBlocks,
+		multiplier,
+		increaseThreshold,
+	)
+	if err != nil {
+		t.Fatalf("Failed to reopen disk: %v", err)
+	}
+
+	defer func(d2 *Disk) {
+		_ = d2.Close()
+	}(d2)
+
+	// 5. Read and verify the data
+	readData, err := d2.ReadAt(blockNum)
+	if err != nil {
+		t.Fatalf("Failed to read data: %v", err)
+	}
+
+	// Trim padding since the original data might be smaller than the block size
+	readData = bytes.Trim(readData, "\x00")
+	if !bytes.Equal(readData, testData) {
+		t.Fatalf("Data mismatch after reopening.\nExpected: %s\nGot: %s", testData, readData)
+	}
+
+	// Read and verify the second block
+	readData2, err := d2.ReadAt(blockNum2)
+	if err != nil {
+		t.Fatalf("Failed to read second data block: %v", err)
+	}
+
+	readData2 = bytes.Trim(readData2, "\x00")
+	if !bytes.Equal(readData2, testData2) {
+		t.Fatalf("Data mismatch in second block.\nExpected: %s\nGot: %s", testData2, readData2)
+	}
+
+	// 6. Test block deletion
+	err = d2.Delete(blockNum)
+	if err != nil {
+		t.Fatalf("Failed to delete block: %v", err)
+	}
+
+	// 7. Write new data and verify it uses the freed block
+	testData3 := []byte("This is replacement data that should use the previously deleted block.")
+	blockNum3, err := d2.Write(testData3)
+	if err != nil {
+		t.Fatalf("Failed to write replacement data: %v", err)
+	}
+
+	// The new block should ideally reuse the previously deleted block
+	t.Logf("Replacement data written to block: %d (original deleted block was: %d)", blockNum3, blockNum)
+
+	// Read and verify the new data
+	readData3, err := d2.ReadAt(blockNum3)
+	if err != nil {
+		t.Fatalf("Failed to read replacement data: %v", err)
+	}
+
+	readData3 = bytes.Trim(readData3, "\x00")
+	if !bytes.Equal(readData3, testData3) {
+		t.Fatalf("Replacement data mismatch.\nExpected: %s\nGot: %s", testData3, readData3)
 	}
 }
 
