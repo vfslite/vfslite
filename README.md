@@ -15,6 +15,10 @@ VFSLite is a lightweight, single file virtual file system.  VFSLite can be acces
 - **Dynamic Disk Expansion** - VFSLite supports automatic dynamic disk expansion.
 - **Stream I/O** - VFSLite supports stream I/O.  This means that you can read and write files in a streaming fashion.
 
+## Discord Community
+Join the VFSLite Discord community to work on development, ask questions, make requests, and more.
+[![Discord](https://img.shields.io/discord/1348106697234841712?color=0970da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/J7z7nNMBRX)
+
 ## GO API
 
 ### Import
