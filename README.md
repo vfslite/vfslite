@@ -283,11 +283,37 @@ if err != nil {
 }
 ```
 
+### Getting File Size
+```go
+size, err := vfs.GetFileSize(fileBlock)
+if err != nil {
+    // handle error
+}
 
-### Additional Operations
-- **Appending Data** You can use `AppendData` to add extra data blocks to a file.
-- **Updating Metadata** You can use `UpdateBlockMetadata` to modify metadata using a custom update function.
-- **Getting File Size** You can use `GetFileSize` to calculate the size of a file by summing the sizes of its data blocks.
+fmt.Printf("File size: %d bytes\n", size)
+```
+
+### Updating Block Metadata
+```go
+// Update metadata using a function that modifies the metadata object
+err = vfs.UpdateBlockMetadata(fileBlock, func(meta *vfslite.Metadata) {
+    meta.Extra["lastAccessed"] = time.Now().Format(time.RFC3339)
+    meta.Extra["version"] = "1.2"
+})
+if err != nil {
+    // handle error
+}
+```
+
+### Appending Data to Files
+```go
+additionalData := []byte("More content to add to the file")
+
+err = vfs.AppendData(fileBlock, additionalData)
+if err != nil {
+    // handle error
+}
+```
 
 ## C API
-..
+..coming

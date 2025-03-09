@@ -303,6 +303,7 @@ func (vfs *VFSLite) createBlock(blockType uint8, data []byte, meta *Metadata) (u
 	return blockNum, nil
 }
 
+// ReadBlock reads a block and returns its header, metadata, data, and references
 func (vfs *VFSLite) ReadBlock(blockNum uint64) (*BlockHeader, *Metadata, []byte, []uint64, error) {
 	return vfs.readBlock(blockNum)
 
