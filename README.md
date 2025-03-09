@@ -316,4 +316,157 @@ if err != nil {
 ```
 
 ## C API
-..coming
+Firstly you must build and include the shared library.  This is important :)
+
+### Opening and closing VFSLite
+```c
+/* Open a virtual disk (creates if it doesn't exist) */
+int vfsl_open(const char* diskName, unsigned int blockSize, unsigned long long initialBlocks);
+
+/* Close a VFSLite instance */
+int vfsl_close(int handle);
+```
+
+### Basic Navigation
+```c
+/* Get the root block of the filesystem */
+unsigned long long vfsl_get_root_block(int handle);
+
+/* Get directory by path */
+unsigned long long vfsl_get_directory(int handle, unsigned long long startDir, const char* path);
+
+/* Get file by name from a directory */
+unsigned long long vfsl_get_file(int handle, unsigned long long dirBlock, const char* fileName);
+
+/* Get file by path */
+unsigned long long vfsl_get_file_by_path(int handle, unsigned long long startDir, const char* path);
+
+/* List children of a directory */
+size_t vfsl_list_children(int handle, unsigned long long blockNum, void* buffer, size_t bufferSize);
+```
+
+### Creating Files and Directories
+```c
+/* Create a directory */
+unsigned long long vfsl_create_directory_block(int handle, unsigned long long parentBlock, const char* dirName);
+
+/* Create a file */
+unsigned long long vfsl_create_file_block(int handle, unsigned long long parentBlock, const char* fileName);
+```
+
+### File Operations
+```c
+/* Write a file in one operation */
+unsigned long long vfsl_write_file(int handle, unsigned long long parentDir, const char* fileName,
+const void* data, size_t dataSize);
+
+/* Read a file in one operation */
+size_t vfsl_read_file(int handle, unsigned long long fileBlock, void* buffer, size_t bufferSize);
+
+/* Get file size */
+unsigned long long vfsl_get_file_size(int handle, unsigned long long fileBlock);
+
+/* Update file content */
+int vfsl_update_file(int handle, unsigned long long fileBlock, const void* data, size_t dataSize);
+
+/* Update file by path */
+int vfsl_update_file_by_path(int handle, unsigned long long startDir, const char* path,
+const void* data, size_t dataSize);
+```
+
+### Streaming I/O
+```c
+/* Create a stream writer */
+int vfsl_create_stream_writer(int handle, unsigned long long parentBlock, const char* fileName);
+
+/* Write to a stream */
+int vfsl_stream_writer_write(int writerHandle, const void* data, size_t dataSize);
+
+/* Close a stream writer */
+int vfsl_stream_writer_close(int writerHandle);
+
+/* Open a stream reader */
+int vfsl_open_stream_reader(int handle, unsigned long long fileBlock);
+
+/* Read from a stream */
+int vfsl_stream_reader_read(int readerHandle, void* buffer, size_t bufferSize);
+
+/* Close a stream reader */
+int vfsl_stream_reader_close(int readerHandle);
+```
+
+### Deletion Operations
+```c
+/* Delete a file by block ID */
+int vfsl_delete_file(int handle, unsigned long long fileBlock);
+
+/* Delete a file from a parent directory */
+int vfsl_delete_file_from_parent(int handle, unsigned long long parentDir, const char* fileName);
+
+/* Delete a directory by block ID */
+int vfsl_delete_directory(int handle, unsigned long long dirBlock);
+
+/* Delete a directory from a parent */
+int vfsl_delete_directory_from_parent(int handle, unsigned long long parentDir, const char* dirName);
+
+/* Delete by path */
+int vfsl_delete_by_path(int handle, unsigned long long startDir, const char* path);
+```
+
+### Renaming Operations
+```c
+/* Rename a file */
+int vfsl_rename_file(int handle, unsigned long long dirBlock, const char* oldName, const char* newName);
+
+/* Rename a directory */
+int vfsl_rename_directory(int handle, unsigned long long parentDir, const char* oldName, const char* newName);
+
+/* Rename by path */
+int vfsl_rename_by_path(int handle, unsigned long long startDir, const char* path, const char* newName);
+```
+
+### Metadata Operations
+```c
+/* Get block type */
+int vfsl_get_block_type(int handle, unsigned long long blockNum);
+
+/* Get block data */
+size_t vfsl_get_block_data(int handle, unsigned long long blockNum, void* buffer, size_t bufferSize);
+
+/* Get block metadata */
+size_t vfsl_get_block_metadata(int handle, unsigned long long blockNum, void* buffer, size_t bufferSize);
+
+/* Set extra metadata */
+int vfsl_set_extra_metadata(int handle, unsigned long long blockNum, const char* key, const char* value);
+
+/* Get extra metadata */
+int vfsl_get_extra_metadata(int handle, unsigned long long blockNum, const char* key,
+void* buffer, size_t bufferSize);
+
+/* Get file size */
+unsigned long long vfsl_get_file_size(int handle, unsigned long long fileBlock);
+```
+
+### Hierarchical Operations
+```c
+/* Add a child block to a parent */
+int vfsl_add_child(int handle, unsigned long long parentBlock, unsigned long long childBlock);
+
+/* Remove a child block from a parent */
+int vfsl_remove_child(int handle, unsigned long long parentBlock, unsigned long long childBlock);
+```
+
+### Additional Operations
+```c
+/* Append data to an existing file */
+int vfsl_append_data(int handle, unsigned long long fileBlock, const void* data, size_t dataSize);
+
+/* Get block header information */
+size_t vfsl_get_block_header(int handle, unsigned long long blockNum, void* buffer, size_t bufferSize);
+
+/* Update block metadata with JSON */
+int vfsl_update_block_metadata(int handle, unsigned long long blockNum, const char* metadataJSON);
+
+/* Rename a block (change its name) */
+int vfsl_rename_block(int handle, unsigned long long blockNum, const char* newName);
+```
