@@ -20,9 +20,9 @@ import (
 	"C"
 	"encoding/json"
 	"fmt"
+	"github.com/vfslite/vfslite"
 	"sync"
 	"unsafe"
-	"vfslite"
 )
 
 // Store VFSLite instances in a map with a mutex for thread safety
