@@ -22,11 +22,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/vfslite/vfslite/disk"
 	"io"
 	"os"
 	"strings"
 	"time"
-	"vfslite/disk"
 )
 
 // Block types
