@@ -5,7 +5,7 @@
 VFSLite is a lightweight, single file virtual file system.  VFSLite can be accessed via Go or shared C library.
 
 ## Features
-- **Block-Based Filesystem** - VFSLite is a block-based filesystem.  This means that files are stored in used-defined fixed-size blocks.
+- **Block-Based Filesystem** - VFSLite is a block-based filesystem.  This means that files are stored in user-defined fixed-size blocks.
 - **Single File** - VFSLite is a single file, the entire filesystem is stored in a single file.
 - **Metadata Management** - Custom metadeta can be stored with each file.  This allows for easy storage and retrieval of file metadata.
 - **Go and C API** - VFSLite can be accessed via Go or shared C library.
